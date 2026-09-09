@@ -2,10 +2,9 @@
 The CompetencyAchievementCriteria models: CompetencyCriteriaGroup, CompetencyRuleProfile, and
 CompetencyCriterion.
 
-See :ref:`openedx-learning-adr-0002` for the design, including Decision 7 for why each foreign
-key here is CASCADE or PROTECT and for the one known case where a taxonomy delete reports the
-wrong blocking object. See :ref:`openedx-learning-adr-0003` Decisions 1 and 2 for why these
-three models carry ``django-simple-history`` tracking and CompetencyTaxonomy does not.
+See :ref:`openedx-learning-adr-0002` Decisions 2, 3 and 4 for the design and Decision 7 for each
+foreign key's delete behavior, and :ref:`openedx-learning-adr-0003` Decisions 1 and 2 for why
+these models carry ``django-simple-history`` tracking and CompetencyTaxonomy does not.
 """
 from __future__ import annotations
 
@@ -108,9 +107,6 @@ class CompetencyCriteriaGroup(models.Model):
             # indexes every ForeignKey column by default, so a second explicit one here would only
             # cost write throughput without adding any read benefit.
         ]
-        # No constraint tying `logic_operator` to child count, and no UniqueConstraint on (parent,
-        # ordering): a child group cannot be saved until its parent's primary key exists, so
-        # neither has a single-row state to check at save time. See ADR-0002 Decision 2.
 
 
 class CompetencyRuleProfile(models.Model):
@@ -123,19 +119,8 @@ class CompetencyRuleProfile(models.Model):
     Decision 3 for how a :class:`CompetencyCriterion` is assigned one of these, and Decision 4 for
     what happens when more than one scope's profile could apply to the same criterion.
 
-    Editing a profile may change ``rule_type``/``rule_payload`` only: the scope fields
-    (``organization``, ``course``, ``competency_taxonomy``) are immutable after creation, so that
-    criteria already resolved to this profile's scope are never silently re-governed. ``clean()``
-    enforces this by comparing the current scope columns against what is actually persisted for
-    this row, so the check holds regardless of whether this instance was loaded with a partial
-    ``.only()``/``.defer()`` that skipped some scope columns. It does not cover a bulk
-    ``QuerySet.update()``, since that path never loads or constructs a model instance at all.
-
-    ``rule_payload``'s shape (see :func:`~openedx_learning.applets.cbe.rule_payloads.validate_rule_payload`)
-    is likewise validated from ``clean()``, reached from both ``objects.create()`` and a plain
-    ``instance.save()`` via ``full_clean()``. A bulk ``QuerySet.update()``, ``bulk_create()``, and a
-    DRF serializer that writes straight to the database are NOT covered: none of them build or save
-    a model instance, so ``clean()`` never runs.
+    A profile's scope is immutable after creation; only ``rule_type``, ``rule_payload`` and
+    ``archived`` may change.
 
     .. no_pii:
     """
@@ -166,8 +151,8 @@ class CompetencyRuleProfile(models.Model):
         help_text=_("The competency taxonomy this profile is scoped to, if any."),
     )
     # Recomputed in save(), never set directly: null while archived, so any number of archived
-    # rows may share a scope while exactly one live row holds it. Deliberately a plain column
-    # rather than a GeneratedField. See ADR-0002 Decision 3.
+    # rows may share a scope while exactly one live row holds it, which is what lets an archived
+    # profile be replaced. See ADR-0002 Decision 3.
     scope_code = models.CharField(
         max_length=255,
         null=True,
@@ -179,13 +164,16 @@ class CompetencyRuleProfile(models.Model):
     )
     rule_type = models.CharField(max_length=32, choices=RuleType)
     rule_payload = models.JSONField(
-        help_text=_("Structured payload keyed by rule_type; see validate_rule_payload for the shape it must match.")
+        help_text=_(
+            'Structured payload whose keys are set by rule_type. A "Grade" payload is '
+            '{"op": "gte" | "lte" | "eq", "value": a fraction from 0.0 to 1.0, "scale": "percent"}.'
+        )
     )
     archived = models.BooleanField(
         default=False,
         help_text=_(
-            "Set instead of deleting a profile that's no longer wanted. Archived profiles are hidden from "
-            "authoring and new associations but remain queryable, so existing criteria stay resolvable."
+            "Hides a profile from authoring and from new associations while keeping it queryable, so "
+            "criteria already assigned to it stay resolvable."
         ),
     )
 
@@ -235,11 +223,9 @@ class CompetencyRuleProfile(models.Model):
             # A new, unsaved instance: there's no persisted scope yet to compare against.
             return
         # Queried rather than compared against a value cached at load time, so a deferred load or
-        # a refresh_from_db() cannot bypass the check. `using` keeps a non-default-database
-        # instance from being compared against the wrong alias.
+        # a refresh_from_db() cannot bypass the check.
         persisted_scope = (
-            CompetencyRuleProfile.objects.using(self._state.db)
-            .filter(pk=self.pk)
+            CompetencyRuleProfile.objects.filter(pk=self.pk)
             .values_list("organization_id", "course_id", "competency_taxonomy_id")
             .first()
         )
@@ -264,14 +250,14 @@ class CompetencyRuleProfile(models.Model):
         """Return this profile's scope_code, or None while it is archived."""
         if self.archived:
             return None
-        scope_ids = (self.organization_id, self.course_id, self.competency_taxonomy_id)
-        return "org:{},course:{},taxonomy:{}".format(*("" if pk is None else pk for pk in scope_ids))
+        # A blank segment, not "None", for an unset scope: ADR-0002 Decision 3 fixes this format.
+        org, course, taxonomy = self.organization_id, self.course_id, self.competency_taxonomy_id
+        return f"org:{org or ''},course:{course or ''},taxonomy:{taxonomy or ''}"
 
     def save(self, *args, **kwargs):
-        """Recompute scope_code, then persist this profile after full_clean() re-validates it."""
+        """On save: recompute and validate scope_code."""
         self.scope_code = self._compute_scope_code()
-        # Ensure that we run the validations/defaults defined in clean().
-        # But don't validate_unique(); it just runs extra queries and the database enforces it anyways.
+        # validate_unique() is already enforced by the database.
         self.full_clean(validate_unique=False, validate_constraints=False)
         super().save(*args, **kwargs)
 
@@ -319,7 +305,7 @@ class CompetencyCriterion(models.Model):
         null=True,
         blank=True,
         db_column="competency_rule_profile_id",
-        on_delete=models.PROTECT,
+        on_delete=models.RESTRICT,
         related_name="criteria",
         help_text=_("The profile this criterion uses by default. Null only when overrides are set instead."),
     )

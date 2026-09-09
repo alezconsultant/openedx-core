@@ -1,4 +1,4 @@
-"""Shared fixtures for the CBE criteria test modules: schema, deletion, and tree-integration tests."""
+"""Shared fixtures for the CBE criteria test modules."""
 import pytest
 from organizations.api import ensure_organization
 from organizations.models import Organization
@@ -43,7 +43,7 @@ def _tag(competency_taxonomy: CompetencyTaxonomy) -> Tag:
 
 @pytest.fixture(name="object_tag")
 def _object_tag(competency_taxonomy: CompetencyTaxonomy, tag: Tag) -> ObjectTag:
-    """An ObjectTag associating `tag` with a made-up content object, for use as a criterion's target."""
+    """An ObjectTag associating `tag` with a made-up content object, a criterion's target."""
     return ObjectTag.objects.create(
         object_id="block-v1:Org1+Python100+Fall2026+problem+p1",
         taxonomy=competency_taxonomy,
@@ -59,7 +59,7 @@ def _group(tag: Tag) -> CompetencyCriteriaGroup:
 
 @pytest.fixture(name="default_rule_profile")
 def _default_rule_profile() -> CompetencyRuleProfile:
-    """The system-default CompetencyRuleProfile seeded by migration 0003."""
+    """The system-default CompetencyRuleProfile seeded by migration 0005."""
     return CompetencyRuleProfile.objects.get(
         organization__isnull=True,
         course__isnull=True,
