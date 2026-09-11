@@ -2,12 +2,15 @@
 Tests for the CBE public API surface (openedx_learning.api).
 """
 import pytest
+from organizations.models import Organization
 
-from openedx_learning.api import is_competency_taxonomy, select_competency_taxonomies
-from openedx_learning.models import CompetencyTaxonomy
+from openedx_learning.api import get_competency_rule_profiles, is_competency_taxonomy, select_competency_taxonomies
+from openedx_learning.models import CompetencyRuleProfile, CompetencyTaxonomy, RuleType
 from openedx_tagging.models import Taxonomy
 
 pytestmark = pytest.mark.django_db
+
+GRADE_PAYLOAD = {"op": "gte", "value": 0.8, "scale": "percent"}
 
 
 def test_is_competency_taxonomy() -> None:
@@ -59,3 +62,50 @@ def test_select_competency_taxonomies_avoids_n_plus_1(django_assert_num_queries)
 
     assert results.count(True) == 2
     assert results.count(False) == 1
+
+
+def test_get_competency_rule_profiles_returns_the_seeded_default(
+    default_rule_profile: CompetencyRuleProfile,
+) -> None:
+    """get_competency_rule_profiles() returns the system default an instance starts with."""
+    assert list(get_competency_rule_profiles()) == [default_rule_profile]
+
+
+def test_get_competency_rule_profiles_excludes_archived(
+    default_rule_profile: CompetencyRuleProfile,
+    competency_taxonomy: CompetencyTaxonomy,
+) -> None:
+    """get_competency_rule_profiles() leaves retired profiles out."""
+    archived = CompetencyRuleProfile.objects.create(
+        rule_type=RuleType.GRADE,
+        rule_payload=GRADE_PAYLOAD,
+        competency_taxonomy=competency_taxonomy,
+        archived=True,
+    )
+
+    profiles = list(get_competency_rule_profiles())
+
+    assert archived not in profiles
+    assert profiles == [default_rule_profile]
+
+
+def test_get_competency_rule_profiles_is_ordered_by_id(
+    default_rule_profile: CompetencyRuleProfile,
+    competency_taxonomy: CompetencyTaxonomy,
+    organization: Organization,
+) -> None:
+    """
+    get_competency_rule_profiles() returns profiles in ascending id order, every time.
+
+    Without a deterministic order, paginating the collection would repeat and skip rows.
+    """
+    taxonomy_scoped = CompetencyRuleProfile.objects.create(
+        rule_type=RuleType.GRADE, rule_payload=GRADE_PAYLOAD, competency_taxonomy=competency_taxonomy
+    )
+    organization_scoped = CompetencyRuleProfile.objects.create(
+        rule_type=RuleType.GRADE, rule_payload=GRADE_PAYLOAD, organization=organization
+    )
+
+    expected = [default_rule_profile, taxonomy_scoped, organization_scoped]
+    assert list(get_competency_rule_profiles()) == expected
+    assert list(get_competency_rule_profiles()) == expected

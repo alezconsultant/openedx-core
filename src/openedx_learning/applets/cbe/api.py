@@ -7,10 +7,30 @@ from django.db.models import QuerySet
 
 from openedx_tagging.models import Taxonomy
 
+from .models import CompetencyRuleProfile
+
 __all__ = [
+    "get_competency_rule_profiles",
     "is_competency_taxonomy",
     "select_competency_taxonomies",
 ]
+
+
+def get_competency_rule_profiles() -> QuerySet[CompetencyRuleProfile]:
+    """
+    Return every live CompetencyRuleProfile, in ascending ``id`` order.
+
+    UNSTABLE: the rule profile family is incomplete, so the create, update, and archive entry
+    points still to come may change this function's shape without a deprecation cycle.
+
+    Archived profiles are left out: retirement is archive-only and a profile is never hard
+    deleted (:ref:`openedx-learning-adr-0002` Decision 7), so an unfiltered result would grow
+    without bound.
+
+    The ordering is part of the contract rather than a cosmetic detail: an unordered queryset
+    gives a paginating caller overlapping and skipped pages.
+    """
+    return CompetencyRuleProfile.objects.filter(archived=False).order_by("id")
 
 
 def is_competency_taxonomy(taxonomy: Taxonomy) -> bool:
