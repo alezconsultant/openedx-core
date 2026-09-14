@@ -121,7 +121,7 @@ Decision
 
    - Each row is scoped by at most one of taxonomy, course, or organization (or by none, for the system default). A check constraint enforces that at most one of ``organization_id``, ``course_id``, and ``competency_taxonomy_id`` is non-null per row. See Decision 4 for how a criterion is assigned a profile when rows in more than one of these scopes could apply to it.
    - At most one profile row may exist per distinct scope value. This is enforced by a unique constraint on the derived ``scope_code`` column (Decision 5), not a plain unique constraint on the three raw scope columns; see the ``scope_code`` column definition below for why.
-   - The system default is the single profile row where all three scope fields are null. ``scope_code`` is non-null for this row, as it is for any other live profile (see below), so its singularity is enforced by the same unique constraint as every other profile rather than a separate procedural guarantee; it is seeded once via migration and never created or deleted through the profile API. If/when a REST API or application-layer/service code exists for editing a profile's ``rule_type``/``rule_payload``, the system default row would be editable through it like any other profile. Until then, only an operator can edit it directly (for example via Django admin or SQL).
+   - The system default is the single profile row where all three scope fields are null. ``scope_code`` is non-null for this row to not collide with archived rule profiles.
    - Is referenced by ``CompetencyCriterion``, which may override its type/payload.
    - Never hard-deleted; retirement is archive-only (Decision 7).
 
@@ -131,7 +131,7 @@ Decision
    2. ``organization_id``: The ``organization_id`` of the organization that this competency rule profile is scoped to. Null if it is not scoped to a specific organization.
    3. ``course_id``: The ``course_id`` of the course that this competency rule profile is scoped to. Null if it is not scoped to a specific course.
    4. ``competency_taxonomy_id``: The ``CompetencyTaxonomy.taxonomy_ptr_id`` of the competency taxonomy that this competency rule profile is scoped to. Null if it is not scoped to a specific taxonomy.
-   5. ``scope_code``: A plain column, recomputed by the model's ``save()`` and never set directly, in the fixed, trivially-parseable format ``"org:X,course:Y,taxonomy:Z"``, with each segment left blank when the corresponding scope column is null: for example ``"org:5,course:,taxonomy:"``, or ``"org:,course:,taxonomy:"`` for the system default row. It is null while a profile is archived, and non-null while it is live. Collapsing the scope into one column exists because SQL never treats two ``NULL`` values as equal for uniqueness purposes, so a plain unique constraint across the three nullable scope columns would not stop two rows from sharing a scope. Nulling it while archived is what frees an archived profile's scope for a replacement, without needing the conditional unique index MySQL does not support. It is a plain column rather than a ``GeneratedField`` because Django's delete collector nulls a nullable cascading foreign key before issuing the DELETE on backends that cannot defer constraint checks, and a generated column would recompute from that nulled value and collide with whichever row already holds the resulting blank scope. A plain column is untouched by that nulling.
+   5. ``scope_code``: A plain column in the format ``"org:X,course:Y,taxonomy:Z"``, with each segment left blank when the corresponding scope column is null: for example ``"org:5,course:,taxonomy:"``, or ``"org:,course:,taxonomy:"`` for the system default row. It is non-null when it is live, and null while archived. This frees an archived profile's scope for a replacement.
    6. ``rule_type``: “View”, “Grade”, “MasteryLevel” (Only “Grade” will be supported for now)
    7. ``rule_payload``: JSON payload keyed by ``rule_type`` to avoid freeform strings. It is structured JSON (not arbitrary freeform data): each ``rule_type`` defines the allowed payload shape and required keys, and validation enforces this contract. JSON is used instead of fixed columns like ``op``, ``value``, and ``scale`` so that future rule types (for example, ``MasteryLevel`` thresholds or plugin-defined evaluators such as CEL-based rules) can add their own fields without repeated schema migrations or many nullable columns. Examples:
 
@@ -454,3 +454,9 @@ Changelog
   course-scoped subtree, not just the top one, and can't change after creation.
   Simplified retrieval scope and dropped the pagination note, since both assumed
   course-date windowing, which #676's new read path doesn't use.
+
+2026-09-09:
+
+* ``scope_code`` on ``CompetencyRuleProfile`` is now computed by
+  application code instead of being database-generated, and is set to null while a
+  profile is archived, freeing its scope for a replacement.

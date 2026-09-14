@@ -1,15 +1,15 @@
 """
 Integrative tests for CompetencyAchievementCriteria trees.
 
-test_criteria_deletion.py proves each foreign key cascades or protects correctly in isolation.
-That is not the same claim as "deleting somewhere in the middle of a realistic tree leaves exactly
-the right rows behind and nothing else": a per-foreign-key test can pass while a wider tree still
-ends up with an orphaned group, a criterion pointing at nothing, or a sibling branch disturbed by
-a delete that should not have touched it. The tests here build a wider tree on purpose and assert
-the full surviving/removed row set, not just that a cascade fired somewhere.
+test_criteria_group_deletion.py, test_rule_profile_deletion.py, and test_criterion_deletion.py
+each prove one foreign key cascades or protects correctly in isolation. That is not the same
+claim as "deleting somewhere in the middle of a realistic tree leaves exactly the right rows
+behind and nothing else": a per-foreign-key test can pass while a wider tree still ends up with
+an orphaned group, a criterion pointing at nothing, or a sibling branch disturbed by a delete
+that should not have touched it. The test here builds a wider tree on purpose and asserts the
+full surviving/removed row set, not just that a cascade fired somewhere.
 
-Fixtures shared with test_criteria_models.py and test_criteria_deletion.py live in this directory's
-conftest.py.
+Fixtures shared with the other test modules in this directory live in its conftest.py.
 """
 import pytest
 
@@ -25,35 +25,6 @@ from openedx_tagging.models import ObjectTag, Tag
 pytestmark = pytest.mark.django_db
 
 _GRADE_PAYLOAD = {"op": "gte", "value": 0.8, "scale": "percent"}
-
-
-def test_object_tag_delete_leaves_a_childless_criteria_group_behind(
-    group: CompetencyCriteriaGroup, object_tag: ObjectTag, default_rule_profile: CompetencyRuleProfile
-) -> None:
-    """
-    Deleting an ObjectTag cascades away the CompetencyCriterion that references it, but leaves the
-    CompetencyCriteriaGroup that housed that criterion in place, even when it was the group's only
-    criterion and the group now has no children of any kind (no criteria, no child groups).
-
-    This is a deliberately accepted outcome, not a bug: CompetencyCriteriaGroup does not reference
-    ObjectTag at all (only CompetencyCriterion does), so nothing about deleting an ObjectTag gives
-    the collector a reason to reach the group. A childless group left behind this way is inert (it
-    evaluates no criteria and contributes nothing to its parent's logic_operator combination) and
-    is exactly the state authoring tooling must already handle for a group edited down to zero
-    children, so no additional cleanup path exists for this narrower case either. Pinned here so a
-    future change one way or the other (cascading the now-childless group away, or continuing to
-    leave it) is a deliberate decision, not an accidental side effect of something else.
-    """
-    criterion = CompetencyCriterion.objects.create(
-        group=group, object_tag=object_tag, rule_profile=default_rule_profile
-    )
-    assert CompetencyCriterion.objects.filter(pk=criterion.pk).exists()
-
-    object_tag.delete()
-
-    assert not CompetencyCriterion.objects.filter(pk=criterion.pk).exists()
-    assert CompetencyCriteriaGroup.objects.filter(pk=group.pk).exists()
-    assert not CompetencyCriteriaGroup.objects.get(pk=group.pk).criteria.exists()
 
 
 def test_deleting_a_middle_group_removes_its_subtree_but_leaves_the_rest_of_the_tree_untouched(
