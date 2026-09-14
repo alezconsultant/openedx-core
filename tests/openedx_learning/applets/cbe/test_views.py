@@ -13,7 +13,7 @@ from rest_framework import status
 from rest_framework.test import APIClient
 
 from openedx_catalog.models import CatalogCourse, CourseRun
-from openedx_learning.api import resolve_or_create_leaf_group
+from openedx_learning.api import create_leaf_group
 from openedx_learning.models import (
     CompetencyCriteriaGroup,
     CompetencyCriterion,
@@ -317,9 +317,9 @@ def test_no_group_no_existing_groups_creates_the_full_hierarchy_and_201s(
     root = course_level.parent
     assert root is not None
     assert root.parent is None
-    assert response.data["oel_tagging_objecttag_id"] == criterion.object_tag_id
-    assert response.data["competency_criteria_group_id"] == criterion.group_id
-    assert response.data["competency_rule_profile_id"] == default_rule_profile.id
+    assert response.data["object_tag_id"] == criterion.object_tag_id
+    assert response.data["group_id"] == criterion.group_id
+    assert response.data["rule_profile_id"] == default_rule_profile.id
 
 
 def test_logic_operator_provided_is_stored_on_the_new_leaf(
@@ -352,7 +352,7 @@ def test_group_id_and_logic_operator_together_is_rejected(
     user_client: APIClient, tag: Tag, course_run: CourseRun,
 ) -> None:
     """Supplying both group_id and logic_operator is a 400, before anything is created."""
-    leaf = resolve_or_create_leaf_group(tag, course_run)
+    leaf = create_leaf_group(tag, course_run)
     object_id = usage_key(course_run, "p1")
 
     response = user_client.post(
@@ -409,7 +409,7 @@ def test_new_course_level_group_for_a_different_course(
 
 def test_supplied_leaf_group_happy_path(user_client: APIClient, tag: Tag, course_run: CourseRun) -> None:
     """Supplying an existing, valid leaf group_id uses it directly."""
-    leaf = resolve_or_create_leaf_group(tag, course_run)
+    leaf = create_leaf_group(tag, course_run)
     object_id = usage_key(course_run, "p1")
 
     response = user_client.post(
@@ -417,7 +417,7 @@ def test_supplied_leaf_group_happy_path(user_client: APIClient, tag: Tag, course
     )
 
     assert response.status_code == status.HTTP_201_CREATED
-    assert response.data["competency_criteria_group_id"] == leaf.id
+    assert response.data["group_id"] == leaf.id
 
 
 def test_supplied_group_non_leaf_is_rejected(user_client: APIClient, tag: Tag, course_run: CourseRun) -> None:
@@ -438,7 +438,7 @@ def test_supplied_group_for_a_different_competency_is_rejected(
 ) -> None:
     """A supplied group_id that belongs to a different competency tag is a 400."""
     other_tag = Tag.objects.create(taxonomy=competency_taxonomy, value="Other Competency")
-    other_leaf = resolve_or_create_leaf_group(other_tag, course_run)
+    other_leaf = create_leaf_group(other_tag, course_run)
     object_id = usage_key(course_run, "p1")
 
     response = user_client.post(
@@ -454,7 +454,7 @@ def test_supplied_group_for_a_different_course_is_rejected(
 ) -> None:
     """A supplied group_id whose course-level parent belongs to a different course is a 400."""
     other_course_run = make_course_run(organization, "Python200", "Fall2026")
-    other_leaf = resolve_or_create_leaf_group(tag, other_course_run)
+    other_leaf = create_leaf_group(tag, other_course_run)
     object_id = usage_key(course_run, "p1")
 
     response = user_client.post(
@@ -471,7 +471,7 @@ def test_duplicate_association_supplying_the_same_group_is_rejected(
     """A second criterion for the same (tag, object_id), re-supplying the group it just created, is a 400."""
     object_id = usage_key(course_run, "p1")
     first = user_client.post(criterion_create_url(tag.id), {"object_id": object_id}, format="json")
-    first_group_id = first.data["competency_criteria_group_id"]
+    first_group_id = first.data["group_id"]
 
     response = user_client.post(
         criterion_create_url(tag.id), {"object_id": object_id, "group_id": first_group_id}, format="json",
@@ -492,8 +492,8 @@ def test_duplicate_association_supplying_a_different_existing_leaf_creates_a_sec
     """
     object_id = usage_key(course_run, "p1")
     first = user_client.post(criterion_create_url(tag.id), {"object_id": object_id}, format="json")
-    first_group_id = first.data["competency_criteria_group_id"]
-    other_leaf = resolve_or_create_leaf_group(tag, course_run)
+    first_group_id = first.data["group_id"]
+    other_leaf = create_leaf_group(tag, course_run)
     groups_before = CompetencyCriteriaGroup.objects.count()
 
     response = user_client.post(
@@ -501,11 +501,11 @@ def test_duplicate_association_supplying_a_different_existing_leaf_creates_a_sec
     )
 
     assert response.status_code == status.HTTP_201_CREATED
-    assert response.data["competency_criteria_group_id"] == other_leaf.id
+    assert response.data["group_id"] == other_leaf.id
     # No new groups: other_leaf already existed and was supplied explicitly.
     assert CompetencyCriteriaGroup.objects.count() == groups_before
     criterion_group_ids = set(
-        CompetencyCriterion.objects.filter(object_tag_id=response.data["oel_tagging_objecttag_id"])
+        CompetencyCriterion.objects.filter(object_tag_id=response.data["object_tag_id"])
         .values_list("group_id", flat=True)
     )
     assert criterion_group_ids == {first_group_id, other_leaf.id}
@@ -514,7 +514,14 @@ def test_duplicate_association_supplying_a_different_existing_leaf_creates_a_sec
 def test_duplicate_association_via_the_derive_path_is_rejected_before_creating_a_group(
     user_client: APIClient, tag: Tag, course_run: CourseRun,
 ) -> None:
-    """A second criterion for the same (tag, object_id), with no group_id, is rejected before any new group."""
+    """
+    A second criterion for the same (tag, object_id), with no group_id, is rejected before any new group.
+
+    Rejected regardless of which group the existing criterion is actually in: with no group_id
+    supplied, there's no way to know which group slot this request intends, so any existing
+    criterion for the pair counts as a duplicate (see associate_competency_criterion()'s own
+    comment on this check, in api.py).
+    """
     object_id = usage_key(course_run, "p1")
     user_client.post(criterion_create_url(tag.id), {"object_id": object_id}, format="json")
     groups_before = CompetencyCriteriaGroup.objects.count()
@@ -530,19 +537,18 @@ def test_all_null_rule_fields_resolve_to_the_system_default_profile_id(
     user_client: APIClient, tag: Tag, course_run: CourseRun, default_rule_profile: CompetencyRuleProfile,
 ) -> None:
     """
-    Omitting competency_rule_profile_id, rule_type_override, and rule_payload_override together
-    resolves competency_rule_profile_id to the seeded system-default profile's id, not null.
+    Omitting rule_profile_id, rule_type_override, and rule_payload_override together resolves
+    rule_profile_id to the seeded system-default profile's id, not null.
 
-    Deviation from the ticket's literal text, developer-approved: see the plan's "resolve the
-    system-default profile, don't leave it null" section. CompetencyCriterion's own
-    oel_cbe_criterion_profile_xor_override_check constraint never allows all three fields null.
+    CompetencyCriterion's own oel_cbe_criterion_profile_xor_override_check constraint never
+    allows all three fields null.
     """
     object_id = usage_key(course_run, "p1")
 
     response = user_client.post(criterion_create_url(tag.id), {"object_id": object_id}, format="json")
 
     assert response.status_code == status.HTTP_201_CREATED
-    assert response.data["competency_rule_profile_id"] == default_rule_profile.id
+    assert response.data["rule_profile_id"] == default_rule_profile.id
     assert response.data["rule_type_override"] is None
     assert response.data["rule_payload_override"] is None
 

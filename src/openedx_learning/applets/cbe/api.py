@@ -25,7 +25,7 @@ __all__ = [
     "get_competency_rule_profiles",
     "is_competency_taxonomy",
     "resolve_competency_tag",
-    "resolve_or_create_leaf_group",
+    "create_leaf_group",
     "resolve_supplied_leaf_group",
     "select_competency_taxonomies",
 ]
@@ -84,7 +84,7 @@ def resolve_competency_tag(tag_id: int) -> Tag:
     return tag
 
 
-def resolve_or_create_leaf_group(
+def create_leaf_group(
     tag: Tag,
     course_run: CourseRun,
     logic_operator: str | None = None,
@@ -241,7 +241,7 @@ def associate_competency_criterion(
         if group_id is not None:
             group = resolve_supplied_leaf_group(group_id, tag, course_run)
         else:
-            group = resolve_or_create_leaf_group(tag, course_run, logic_operator)
+            group = create_leaf_group(tag, course_run, logic_operator)
         return create_competency_criterion(
             group=group,
             object_id=object_id,

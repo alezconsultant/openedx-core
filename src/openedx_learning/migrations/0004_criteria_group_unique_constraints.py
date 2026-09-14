@@ -1,7 +1,7 @@
 """
 Add the two partial UniqueConstraints on CompetencyCriteriaGroup that #665 relies on.
 
-resolve_or_create_leaf_group() uses them for race-safe root/course-level group creation: a
+create_leaf_group() uses them for race-safe root/course-level group creation: a
 get_or_create() that loses the race falls back to fetching the row its competitor just
 committed, instead of the two ending up with duplicate roots or course-level groups.
 """

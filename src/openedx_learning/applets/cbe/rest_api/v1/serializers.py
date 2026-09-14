@@ -57,31 +57,30 @@ class CompetencyCriterionSerializer(serializers.ModelSerializer):
     """
     Doubles as the request-body parser and the response representation for a criterion.
 
-    ``object_id``, ``group_id``, and ``logic_operator`` are not CompetencyCriterion fields at
-    all (``object_id`` isn't stored anywhere on this model; ``group_id``/``logic_operator``
-    belong to CompetencyCriteriaGroup), so they're declared as plain write_only fields the view
-    reads out of ``validated_data``, not model-bound fields. ``competency_rule_profile_id``,
-    ``competency_criteria_group_id``, and ``oel_tagging_objecttag_id`` are the ticket's
-    contracted JSON names, but the model's actual attributes are ``rule_profile_id``,
-    ``group_id``, and ``object_tag_id`` -- each needs an explicit ``source=``.
+    ``object_id`` and ``logic_operator`` are not CompetencyCriterion fields at all (``object_id``
+    isn't stored anywhere on this model; ``logic_operator`` belongs to CompetencyCriteriaGroup),
+    so they're declared as plain write_only fields the view reads out of ``validated_data``, not
+    model-bound fields. Every other field's JSON name matches its model attribute exactly
+    (``group_id``, ``rule_profile_id``, ``object_tag_id``), so none of them need a ``source=``.
     """
 
     object_id = serializers.CharField(write_only=True)
-    group_id = serializers.IntegerField(write_only=True, required=False, allow_null=True)
+    group_id = serializers.IntegerField(required=False, allow_null=True)
+    # Only ever applies on the derive-or-create path (group_id omitted): it sets the AND/OR
+    # operator on the brand-new leaf group this request creates. Rejected alongside an explicit
+    # group_id because changing an existing leaf's operator is a future group-update endpoint's
+    # job, not this one's -- a caller can't use this field to silently change an existing
+    # group's behavior.
     logic_operator = serializers.ChoiceField(
         choices=LogicOperator.choices, write_only=True, required=False, allow_null=True,
     )
-    competency_rule_profile_id = serializers.IntegerField(
-        source="rule_profile_id", required=False, allow_null=True,
-    )
-    competency_criteria_group_id = serializers.IntegerField(source="group_id", read_only=True)
-    oel_tagging_objecttag_id = serializers.IntegerField(source="object_tag_id", read_only=True)
+    rule_profile_id = serializers.IntegerField(required=False, allow_null=True)
+    object_tag_id = serializers.IntegerField(read_only=True)
 
     class Meta:
         model = CompetencyCriterion
         fields = [
             "id", "object_id", "group_id", "logic_operator",
-            "competency_rule_profile_id", "rule_type_override", "rule_payload_override",
-            "competency_criteria_group_id", "oel_tagging_objecttag_id",
+            "rule_profile_id", "rule_type_override", "rule_payload_override", "object_tag_id",
         ]
-        read_only_fields = ["id"]
+        read_only_fields = ["id", "object_tag_id"]

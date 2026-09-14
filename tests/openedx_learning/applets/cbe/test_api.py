@@ -10,9 +10,9 @@ from organizations.models import Organization
 from openedx_catalog.models import CatalogCourse, CourseRun
 from openedx_learning.api import (
     associate_competency_criterion,
+    create_leaf_group,
     get_competency_rule_profiles,
     is_competency_taxonomy,
-    resolve_or_create_leaf_group,
     resolve_supplied_leaf_group,
     select_competency_taxonomies,
 )
@@ -144,15 +144,15 @@ def test_get_competency_rule_profiles_is_ordered_by_id(
 
 
 # ==============================================================================================
-# resolve_or_create_leaf_group
+# create_leaf_group
 # ==============================================================================================
 
 
-def test_resolve_or_create_leaf_group_builds_the_full_hierarchy_on_first_use(
+def test_create_leaf_group_builds_the_full_hierarchy_on_first_use(
     tag: Tag, course_run: CourseRun
 ) -> None:
     """A first call with no existing groups creates a root, a course-level group, and a leaf."""
-    leaf = resolve_or_create_leaf_group(tag, course_run)
+    leaf = create_leaf_group(tag, course_run)
 
     course_level = leaf.parent
     assert course_level is not None
@@ -170,20 +170,20 @@ def test_resolve_or_create_leaf_group_builds_the_full_hierarchy_on_first_use(
     assert leaf.logic_operator == LogicOperator.OR
 
 
-def test_resolve_or_create_leaf_group_passes_through_an_explicit_logic_operator(
+def test_create_leaf_group_passes_through_an_explicit_logic_operator(
     tag: Tag, course_run: CourseRun
 ) -> None:
     """A supplied logic_operator is stored on the leaf as-is, not defaulted to OR."""
-    leaf = resolve_or_create_leaf_group(tag, course_run, logic_operator=LogicOperator.AND)
+    leaf = create_leaf_group(tag, course_run, logic_operator=LogicOperator.AND)
     assert leaf.logic_operator == LogicOperator.AND
 
 
-def test_resolve_or_create_leaf_group_reuses_the_root_and_course_level_group_on_a_second_call(
+def test_create_leaf_group_reuses_the_root_and_course_level_group_on_a_second_call(
     tag: Tag, course_run: CourseRun
 ) -> None:
     """A second call for the same tag and course reuses the root and course-level group."""
-    first_leaf = resolve_or_create_leaf_group(tag, course_run)
-    second_leaf = resolve_or_create_leaf_group(tag, course_run)
+    first_leaf = create_leaf_group(tag, course_run)
+    second_leaf = create_leaf_group(tag, course_run)
 
     assert first_leaf.id != second_leaf.id
     assert first_leaf.parent_id == second_leaf.parent_id
@@ -194,14 +194,14 @@ def test_resolve_or_create_leaf_group_reuses_the_root_and_course_level_group_on_
     assert CompetencyCriteriaGroup.objects.filter(tag=tag, course=course_run).count() == 1
 
 
-def test_resolve_or_create_leaf_group_creates_a_new_course_level_group_for_a_different_course(
+def test_create_leaf_group_creates_a_new_course_level_group_for_a_different_course(
     tag: Tag, course_run: CourseRun, organization: Organization
 ) -> None:
     """A second course under the same tag gets its own course-level group, but shares the root."""
     other_course_run = make_course_run(organization, "Python200", "Fall2026")
 
-    first_leaf = resolve_or_create_leaf_group(tag, course_run)
-    second_leaf = resolve_or_create_leaf_group(tag, other_course_run)
+    first_leaf = create_leaf_group(tag, course_run)
+    second_leaf = create_leaf_group(tag, other_course_run)
 
     assert first_leaf.parent is not None
     assert second_leaf.parent is not None
@@ -211,7 +211,7 @@ def test_resolve_or_create_leaf_group_creates_a_new_course_level_group_for_a_dif
     assert CompetencyCriteriaGroup.objects.filter(tag=tag, course__isnull=False).count() == 2
 
 
-def test_resolve_or_create_leaf_group_reuses_a_root_a_concurrent_request_already_committed(
+def test_create_leaf_group_reuses_a_root_a_concurrent_request_already_committed(
     tag: Tag, course_run: CourseRun
 ) -> None:
     """
@@ -224,14 +224,14 @@ def test_resolve_or_create_leaf_group_reuses_a_root_a_concurrent_request_already
     """
     already_committed_root = CompetencyCriteriaGroup.objects.create(tag=tag, parent=None, name="pre-existing root")
 
-    leaf = resolve_or_create_leaf_group(tag, course_run)
+    leaf = create_leaf_group(tag, course_run)
 
     assert leaf.parent is not None
     assert leaf.parent.parent_id == already_committed_root.id
     assert CompetencyCriteriaGroup.objects.filter(tag=tag, parent__isnull=True).count() == 1
 
 
-def test_resolve_or_create_leaf_group_reuses_a_course_level_group_a_concurrent_request_already_committed(
+def test_create_leaf_group_reuses_a_course_level_group_a_concurrent_request_already_committed(
     tag: Tag, course_run: CourseRun
 ) -> None:
     """The course-level group half of the same race-safety guarantee, isolated from the root."""
@@ -240,7 +240,7 @@ def test_resolve_or_create_leaf_group_reuses_a_course_level_group_a_concurrent_r
         tag=tag, course=course_run, parent=root, name="pre-existing course-level group",
     )
 
-    leaf = resolve_or_create_leaf_group(tag, course_run)
+    leaf = create_leaf_group(tag, course_run)
 
     assert leaf.parent_id == already_committed_course_level.id
     assert CompetencyCriteriaGroup.objects.filter(tag=tag, course=course_run).count() == 1
@@ -248,7 +248,7 @@ def test_resolve_or_create_leaf_group_reuses_a_course_level_group_a_concurrent_r
 
 def test_root_group_unique_constraint_rejects_a_second_root_for_the_same_tag(tag: Tag) -> None:
     """
-    The DB constraint resolve_or_create_leaf_group's get_or_create() relies on actually exists.
+    The DB constraint create_leaf_group's get_or_create() relies on actually exists.
 
     Proven directly (bypassing get_or_create) so the race-safety tests above aren't the only
     thing standing between this suite and a silently-dropped migration.
@@ -275,7 +275,7 @@ def test_course_level_group_unique_constraint_rejects_a_second_group_for_the_sam
 
 def test_resolve_supplied_leaf_group_returns_the_leaf_when_it_is_valid(tag: Tag, course_run: CourseRun) -> None:
     """A group_id that names a genuine, matching leaf is returned unchanged."""
-    leaf = resolve_or_create_leaf_group(tag, course_run)
+    leaf = create_leaf_group(tag, course_run)
     assert resolve_supplied_leaf_group(leaf.id, tag, course_run) == leaf
 
 
@@ -307,7 +307,7 @@ def test_resolve_supplied_leaf_group_rejects_a_group_for_a_different_tag(
 ) -> None:
     """A leaf that belongs to a different competency tag is rejected."""
     other_tag = Tag.objects.create(taxonomy=competency_taxonomy, value="Other Competency")
-    leaf = resolve_or_create_leaf_group(other_tag, course_run)
+    leaf = create_leaf_group(other_tag, course_run)
     with pytest.raises(ValidationError, match="group_id"):
         resolve_supplied_leaf_group(leaf.id, tag, course_run)
 
@@ -317,7 +317,7 @@ def test_resolve_supplied_leaf_group_rejects_a_group_for_a_different_course(
 ) -> None:
     """A leaf whose course-level parent belongs to a different course is rejected."""
     other_course_run = make_course_run(organization, "Python200", "Fall2026")
-    leaf = resolve_or_create_leaf_group(tag, other_course_run)
+    leaf = create_leaf_group(tag, other_course_run)
     with pytest.raises(ValidationError, match="group_id"):
         resolve_supplied_leaf_group(leaf.id, tag, course_run)
 
@@ -338,6 +338,10 @@ def test_associate_competency_criterion_creates_the_hierarchy_and_criterion_when
     assert criterion.group.tag_id == tag.id
     assert criterion.group.parent is not None
     assert criterion.group.parent.course_id == course_run.id
+    root = criterion.group.parent.parent
+    assert root is not None
+    assert root.parent is None
+    assert root.tag_id == tag.id
     assert criterion.object_tag.object_id == object_id
     assert criterion.object_tag.tag_id == tag.id
     assert criterion.rule_profile_id == default_rule_profile.id
@@ -347,7 +351,7 @@ def test_associate_competency_criterion_creates_the_hierarchy_and_criterion_when
 
 def test_associate_competency_criterion_uses_a_supplied_group_id(tag: Tag, course_run: CourseRun) -> None:
     """A caller-supplied group_id is used as-is, rather than deriving or creating a new leaf."""
-    leaf = resolve_or_create_leaf_group(tag, course_run)
+    leaf = create_leaf_group(tag, course_run)
     object_id = usage_key(course_run, "p1")
 
     criterion = associate_competency_criterion(tag_id=tag.id, object_id=object_id, group_id=leaf.id)
@@ -359,7 +363,7 @@ def test_associate_competency_criterion_rejects_group_id_and_logic_operator_toge
     tag: Tag, course_run: CourseRun
 ) -> None:
     """Supplying both group_id and logic_operator is rejected before anything is created."""
-    leaf = resolve_or_create_leaf_group(tag, course_run)
+    leaf = create_leaf_group(tag, course_run)
     object_id = usage_key(course_run, "p1")
 
     with pytest.raises(ValidationError, match="logic_operator"):
@@ -400,7 +404,7 @@ def test_associate_competency_criterion_allows_a_different_explicit_group_for_th
     """
     object_id = usage_key(course_run, "p1")
     first = associate_competency_criterion(tag_id=tag.id, object_id=object_id)
-    other_leaf = resolve_or_create_leaf_group(tag, course_run)
+    other_leaf = create_leaf_group(tag, course_run)
 
     second = associate_competency_criterion(tag_id=tag.id, object_id=object_id, group_id=other_leaf.id)
 
