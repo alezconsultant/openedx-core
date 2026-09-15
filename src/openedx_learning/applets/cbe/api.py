@@ -51,10 +51,7 @@ def get_competency_rule_profiles() -> QuerySet[CompetencyRuleProfile]:
     UNSTABLE: the rule profile family is incomplete, so the create, update, and archive entry
     points still to come may change this function's shape without a deprecation cycle.
 
-    Archived profiles are left out: retirement is archive-only, and a direct delete never hard
-    deletes a profile (:ref:`openedx-learning-adr-0002` Decision 7 -- a profile does still go
-    with its scope owner if a scoped taxonomy or course is deleted), so an unfiltered result
-    would grow without bound.
+    Archived profiles are left out: retirement is archive-only.
 
     The ordering is part of the contract rather than a cosmetic detail: an unordered queryset
     gives a paginating caller overlapping and skipped pages.
