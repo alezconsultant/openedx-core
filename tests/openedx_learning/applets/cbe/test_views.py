@@ -15,7 +15,7 @@ from openedx_learning.models import CompetencyRuleProfile, CompetencyTaxonomy, R
 
 pytestmark = pytest.mark.django_db
 
-# What migration 0003 seeds the system default with. Asserted verbatim rather than imported, so
+# What migration 0005 seeds the system default with. Asserted verbatim rather than imported, so
 # that a change to the seed surfaces here as a failing contract instead of passing silently.
 SEEDED_GRADE_PAYLOAD = {"op": "gte", "value": 0.8, "scale": "percent"}
 
@@ -133,7 +133,7 @@ def test_instance_with_no_rule_profiles_reports_an_empty_collection(staff_client
     """
     An instance holding no profiles is an empty collection, not a missing resource.
 
-    Migration 0003 seeds the system default into the test database, so the rows are cleared
+    Migration 0005 seeds the system default into the test database, so the rows are cleared
     explicitly here rather than assuming an empty table.
     """
     CompetencyRuleProfile.objects.all().delete()

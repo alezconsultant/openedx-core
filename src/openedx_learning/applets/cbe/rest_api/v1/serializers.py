@@ -15,14 +15,23 @@ class CompetencyRuleProfileSerializer(serializers.ModelSerializer):
     UNSTABLE: the rule profile family is incomplete, so the create, update, and archive
     endpoints still to come may change this shape without a deprecation cycle.
 
-    ``rule_payload`` is emitted verbatim as stored: :ref:`openedx-learning-adr-0002` Decision 3
-    owns the payload contract, and normalizing it here would make this a second, competing
-    definition of it. That is also why the payload's own ``scale`` key matters, since it is what
-    stops a caller reading the threshold fraction as a percentage or the reverse.
+    ``rule_payload`` is emitted verbatim as stored, so its shape is the one
+    :ref:`openedx-learning-adr-0002` Decision 3 defines per ``rule_type``. For ``Grade``, the only
+    rule type supported in this phase, that shape is ``{"op": ..., "value": ..., "scale": ...}``,
+    where ``op`` is one of ``gte``, ``lte``, or ``eq``, and ``value`` is a fraction between 0.0 and
+    1.0 inclusive, matching the platform's existing fractional grade representation rather than a
+    0-100 scale. That shape is declared as ``GradePayload`` and enforced by
+    ``validate_rule_payload`` in the applet's ``rule_payloads`` module, so normalizing it here
+    would make this serializer a third, competing definition of it. The fractional ``value`` is
+    also why the payload's own ``scale`` key matters, since it is what stops a caller reading the
+    threshold fraction as a percentage or the reverse.
 
     ``scope_code`` and the raw ``organization``, ``course``, and ``competency_taxonomy`` columns
-    are internal bookkeeping that ADR-0002 Decision 3 keeps out of anything exported; the
-    ``scope_type`` below is what a client reads instead.
+    are left out, because the ``scope_type`` below is what a client can act on. ``scope_code`` in
+    particular is internal bookkeeping: :ref:`openedx-learning-adr-0002` Decision 3 defines it as a
+    derived ``"org:X,course:Y,taxonomy:Z"`` string that exists to carry the one-profile-per-scope
+    unique constraint, and that goes null while a profile is archived, so it is not something a
+    caller could rely on.
     """
 
     scope_type = serializers.SerializerMethodField()
