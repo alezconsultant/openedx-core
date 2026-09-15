@@ -519,8 +519,7 @@ def test_duplicate_association_via_the_derive_path_is_rejected_before_creating_a
 
     Rejected regardless of which group the existing criterion is actually in: with no group_id
     supplied, there's no way to know which group slot this request intends, so any existing
-    criterion for the pair counts as a duplicate (see associate_competency_criterion()'s own
-    comment on this check, in api.py).
+    criterion for the pair counts as a duplicate.
     """
     object_id = usage_key(course_run, "p1")
     user_client.post(criterion_create_url(tag.id), {"object_id": object_id}, format="json")
