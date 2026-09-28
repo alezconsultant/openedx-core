@@ -568,3 +568,14 @@ def test_validate_containment_allows_a_tag_with_no_relatives(tag: Tag, course_ru
     group = create_leaf_group(tag, course_run)
 
     cbe_api._validate_containment(group, course_run)  # pylint: disable=protected-access  # Must not raise.
+
+
+def test_create_competency_criterion_rejects_a_group_object_id_course_mismatch(
+    tag: Tag, course_run: CourseRun, organization: Organization,
+) -> None:
+    """object_id's own course must match group's course, even when nothing else conflicts."""
+    other_course_run = make_course_run(organization, "Python200", "Fall2026")
+    group = create_leaf_group(tag, course_run)
+
+    with pytest.raises(ValidationError, match="object_id"):
+        cbe_api.create_competency_criterion(group, usage_key(other_course_run, "p1"))

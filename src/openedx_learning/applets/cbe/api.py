@@ -203,36 +203,50 @@ def create_competency_criterion(
     rather than persisting null: ADR-0002 Decision 4 always resolves to a concrete profile, and
     the model's own xor-override constraint forbids leaving all three fields null.
     """
-    tag = group.tag
-    # tag.taxonomy_id is nullable at the model level; already guaranteed set by the caller.
-    assert tag.taxonomy_id is not None
-    existing_values = [
-        existing_tag.value for existing_tag in get_object_tags(object_id, taxonomy_id=tag.taxonomy_id)
-    ]
-    if tag.value not in existing_values:
-        existing_values.append(tag.value)
-    tag_object(object_id, tag.taxonomy, existing_values)
-    object_tag = ObjectTag.objects.get(object_id=object_id, taxonomy_id=tag.taxonomy_id, tag_id=tag.id)
+    with transaction.atomic():
+        tag = group.tag
+        # tag.taxonomy_id is nullable at the model level; already guaranteed set by the caller.
+        assert tag.taxonomy_id is not None
+        try:
+            object_course = get_course_run(UsageKey.from_string(object_id).course_key)
+        except InvalidKeyError as exc:
+            raise ValidationError({"object_id": _("object_id is not a valid usage key.")}) from exc
+        except CourseRun.DoesNotExist as exc:
+            raise ValidationError({"object_id": _("No course run matches object_id's course.")}) from exc
+        # Serializes concurrent creates for this course -- see the docstring above for why a plain
+        # transaction alone doesn't stop two separate transactions from racing each other.
+        CourseRun.objects.select_for_update().get(pk=object_course.id)
 
-    if rule_profile_id is None and rule_type_override is None and rule_payload_override is None:
-        rule_profile_id = CompetencyRuleProfile.objects.get(
-            organization__isnull=True,
-            course__isnull=True,
-            competency_taxonomy__isnull=True,
-            archived=False,
-        ).id
+        assert group.parent is not None
+        assert group.parent.course is not None
+        if object_course != group.parent.course:
+            raise ValidationError({"object_id": _("object_id's course must match group's course.")})
 
-    assert group.parent is not None
-    assert group.parent.course is not None
-    _validate_containment(group, group.parent.course)
+        _validate_containment(group, group.parent.course)
 
-    return CompetencyCriterion.objects.create(
-        group=group,
-        object_tag=object_tag,
-        rule_profile_id=rule_profile_id,
-        rule_type_override=rule_type_override,
-        rule_payload_override=rule_payload_override,
-    )
+        existing_values = [
+            existing_tag.value for existing_tag in get_object_tags(object_id, taxonomy_id=tag.taxonomy_id)
+        ]
+        if tag.value not in existing_values:
+            existing_values.append(tag.value)
+        tag_object(object_id, tag.taxonomy, existing_values)
+        object_tag = ObjectTag.objects.get(object_id=object_id, taxonomy_id=tag.taxonomy_id, tag_id=tag.id)
+
+        if rule_profile_id is None and rule_type_override is None and rule_payload_override is None:
+            rule_profile_id = CompetencyRuleProfile.objects.get(
+                organization__isnull=True,
+                course__isnull=True,
+                competency_taxonomy__isnull=True,
+                archived=False,
+            ).id
+
+        return CompetencyCriterion.objects.create(
+            group=group,
+            object_tag=object_tag,
+            rule_profile_id=rule_profile_id,
+            rule_type_override=rule_type_override,
+            rule_payload_override=rule_payload_override,
+        )
 
 
 def associate_competency_criterion(
