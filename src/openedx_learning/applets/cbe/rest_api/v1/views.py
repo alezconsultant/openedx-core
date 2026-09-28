@@ -22,20 +22,11 @@ class CompetencyRuleProfileView(mixins.ListModelMixin, GenericViewSet):
     """
     Read the rule profiles this instance defines.
 
+    ``GET api/cbe/v1/rule_profiles/`` lists them to callers who may administer competency
+    configuration, paginated by ``page`` and ``page_size``.
+
     UNSTABLE: the rule profile family is incomplete, so the create, update, and archive
     endpoints still to come may change this shape without a deprecation cycle.
-
-    **List Example Request**
-        GET api/cbe/v1/rule_profiles/
-
-    **List Query Parameters**
-        * page (optional) - Page number (default: 1)
-        * page_size (optional) - Profiles per page (default: 100, max: 500)
-
-    **List Returns**
-        * 200 - Success
-        * 401 - Caller could not be identified
-        * 403 - Caller may not administer competency configuration
 
     This is a collection even while the seeded system default is the only profile an instance
     holds, and it is paginated from the first release: wrapping a bare array in an envelope later
