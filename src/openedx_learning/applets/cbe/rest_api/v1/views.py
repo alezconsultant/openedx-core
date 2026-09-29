@@ -133,7 +133,6 @@ class CompetencyCriteriaTreeView(generics.GenericAPIView):
     permission_classes = [CompetencyReadPermission]
 
     def get(self, request, tag_id):
-        """Resolve the competency tag, check read access, then return its criteria tree."""
         tag = resolve_competency_tag(tag_id)
         self.check_object_permissions(request, tag)
         tree = get_competency_criteria_tree(tag.id)
