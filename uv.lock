@@ -1693,10 +1693,10 @@ test-base = [
 requires-dist = [
     { name = "attrs" },
     { name = "celery" },
-    { name = "django", specifier = ">=5.2,<6.0" },
+    { name = "django" },
     { name = "djangorestframework", specifier = "<4.0" },
-    { name = "edx-drf-extensions", specifier = ">=10.7.0" },
-    { name = "edx-organizations", specifier = ">=9.0.0" },
+    { name = "edx-drf-extensions" },
+    { name = "edx-organizations" },
     { name = "openedx-events" },
     { name = "rules", specifier = "<4.0" },
     { name = "tomlkit" },
