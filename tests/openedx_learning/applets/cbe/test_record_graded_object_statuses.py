@@ -92,6 +92,33 @@ def test_grade_below_threshold_is_attempted_not_demonstrated(
     )
 
 
+@pytest.mark.parametrize(
+    "fraction, expected_status",
+    [
+        pytest.param(Decimal("0.74"), MasteryStatus.ATTEMPTED_NOT_DEMONSTRATED, id="just_below"),
+        pytest.param(Decimal("0.76"), MasteryStatus.DEMONSTRATED, id="just_above"),
+        pytest.param(Decimal("0.749999999999"), MasteryStatus.ATTEMPTED_NOT_DEMONSTRATED, id="fractionally_below"),
+        pytest.param(Decimal("0.7500000000"), MasteryStatus.DEMONSTRATED, id="exact_with_trailing_zeros"),
+        pytest.param(Decimal("0.7500000001"), MasteryStatus.DEMONSTRATED, id="fractionally_above"),
+    ],
+)
+def test_threshold_boundary_precision(
+    user, group: CompetencyCriteriaGroup, object_tag: ObjectTag, rule_profile_75: CompetencyRuleProfile,
+    *, fraction: Decimal, expected_status: MasteryStatus,
+) -> None:
+    """
+    Decimal arithmetic is exact, so a fraction on either side of a 0.75 threshold -- including at
+    extreme precision, and including one with trailing zeros -- resolves without rounding error.
+    """
+    criterion = _make_criterion(group=group, object_tag=object_tag, rule_profile=rule_profile_75)
+
+    record_graded_object_statuses(
+        user_id=user.id, scores=[GradedObjectScore(object_id=object_tag.object_id, fraction=fraction)],
+    )
+
+    assert StudentCompetencyCriteriaStatus.objects.get(criterion=criterion).status_id == expected_status
+
+
 def test_score_exactly_at_default_threshold_demonstrates(
     user, criterion: CompetencyCriterion, object_tag: ObjectTag
 ) -> None:
