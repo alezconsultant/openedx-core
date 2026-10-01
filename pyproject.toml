@@ -40,6 +40,7 @@ dependencies = [
     "rules<4.0",
     "tomlkit",
     "edx-organizations",
+    "django-simple-history",
 ]
 
 [project.urls]
