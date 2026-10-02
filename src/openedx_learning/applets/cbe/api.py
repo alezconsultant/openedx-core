@@ -123,11 +123,13 @@ def create_leaf_group(
     """
     Return a fresh leaf CompetencyCriteriaGroup under ``tag``'s root/course-level groups.
 
-    Gets or creates the root and course-level groups (race-safe via migration 0004's partial
-    UniqueConstraints), then always creates a new leaf: a tag/course pair can hold more than
-    one leaf, one per criterion.
+    Gets or creates the root and course-level groups (race-safe by locking ``tag``'s row), then
+    always creates a new leaf: a tag/course pair can hold more than one leaf, one per criterion.
     """
     with transaction.atomic():
+        # MySQL has no partial unique index to stop two concurrent requests from each creating a
+        # root for the same tag, so they are serialized on the tag row instead.
+        Tag.objects.select_for_update().get(pk=tag.pk)
         root, _ = CompetencyCriteriaGroup.objects.get_or_create(
             tag=tag,
             parent=None,

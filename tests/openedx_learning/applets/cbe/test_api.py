@@ -1,6 +1,8 @@
 """
 Tests for the CBE public API surface (openedx_learning.api).
 """
+from unittest import mock
+
 import pytest
 from django.core.exceptions import ValidationError
 from django.db.utils import IntegrityError
@@ -263,10 +265,8 @@ def test_create_leaf_group_reuses_a_root_a_concurrent_request_already_committed(
     """
     A root created out-of-band (standing in for a concurrent request's winning commit) is reused.
 
-    This exercises the same fallback ``get_or_create()`` relies on for real concurrent callers:
-    the ``oel_cbe_criteria_group_one_root_per_tag`` constraint means a second INSERT attempt for
-    the same tag's root fails, and ``get_or_create()`` falls back to fetching the row that is
-    already there instead of raising.
+    Callers are serialized on the tag row, so a request that waited on the lock finds the
+    winner's committed root and ``get_or_create()`` fetches it instead of creating a second one.
     """
     already_committed_root = CompetencyCriteriaGroup.objects.create(tag=tag, parent=None, name="pre-existing root")
 
@@ -280,7 +280,7 @@ def test_create_leaf_group_reuses_a_root_a_concurrent_request_already_committed(
 def test_create_leaf_group_reuses_a_course_level_group_a_concurrent_request_already_committed(
     tag: Tag, course_run: CourseRun
 ) -> None:
-    """The course-level group half of the same race-safety guarantee, isolated from the root."""
+    """The course-level group half of the same guarantee, isolated from the root."""
     root = CompetencyCriteriaGroup.objects.create(tag=tag, parent=None)
     already_committed_course_level = CompetencyCriteriaGroup.objects.create(
         tag=tag, course=course_run, parent=root, name="pre-existing course-level group",
@@ -292,22 +292,27 @@ def test_create_leaf_group_reuses_a_course_level_group_a_concurrent_request_alre
     assert CompetencyCriteriaGroup.objects.filter(tag=tag, course=course_run).count() == 1
 
 
-def test_root_group_unique_constraint_rejects_a_second_root_for_the_same_tag(tag: Tag) -> None:
+def test_create_leaf_group_locks_the_tag_row_before_creating_groups(tag: Tag, course_run: CourseRun) -> None:
     """
-    The DB constraint create_leaf_group's get_or_create() relies on actually exists.
+    create_leaf_group() takes a row lock on the tag, which is what serializes concurrent callers.
 
-    Proven directly (bypassing get_or_create) so the race-safety tests above aren't the only
-    thing standing between this suite and a silently-dropped migration.
+    MySQL has no partial unique index to reject a second root, so this lock is the only thing
+    preventing two roots for one tag.
     """
-    CompetencyCriteriaGroup.objects.create(tag=tag, parent=None)
-    with pytest.raises(IntegrityError):
-        CompetencyCriteriaGroup.objects.create(tag=tag, parent=None)
+    with mock.patch.object(Tag.objects, "select_for_update", wraps=Tag.objects.select_for_update) as lock:
+        create_leaf_group(tag, course_run)
+
+    lock.assert_called_once_with()
 
 
 def test_course_level_group_unique_constraint_rejects_a_second_group_for_the_same_tag_and_course(
     tag: Tag, course_run: CourseRun
 ) -> None:
-    """The course-level half of the same constraint-existence proof."""
+    """
+    The DB constraint backstopping create_leaf_group()'s course-level get_or_create() exists.
+
+    Proven directly (bypassing get_or_create) so a silently-dropped migration can't go unnoticed.
+    """
     root = CompetencyCriteriaGroup.objects.create(tag=tag, parent=None)
     CompetencyCriteriaGroup.objects.create(tag=tag, course=course_run, parent=root)
     with pytest.raises(IntegrityError):

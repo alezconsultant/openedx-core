@@ -111,19 +111,11 @@ class CompetencyCriteriaGroup(models.Model):
         # ordering): a child group cannot be saved until its parent's primary key exists, so
         # neither has a single-row state to check at save time. See ADR-0002 Decision 2.
         constraints = [
-            # create_leaf_group() relies on both of these for race safety: a
-            # get_or_create() that loses the race falls back to fetching the row the other
-            # request just committed, instead of the two ending up with two roots (or two
-            # course-level groups) for the same tag.
-            models.UniqueConstraint(
-                fields=["tag"],
-                condition=Q(parent__isnull=True),
-                name="oel_cbe_criteria_group_one_root_per_tag",
-                violation_error_message=_("A competency tag may have at most one root CompetencyCriteriaGroup."),
-            ),
+            # Backstops create_leaf_group()'s get_or_create() for course-level groups. It has no
+            # `condition` because MySQL has no partial indexes: a unique index allows repeated
+            # NULLs, and `course` is NULL for roots and leaves.
             models.UniqueConstraint(
                 fields=["tag", "course", "parent"],
-                condition=Q(course__isnull=False),
                 name="oel_cbe_criteria_group_one_course_group_per_tag_course",
                 violation_error_message=_(
                     "A competency tag may have at most one course-level CompetencyCriteriaGroup per course."
