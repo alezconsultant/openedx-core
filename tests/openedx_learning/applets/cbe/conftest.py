@@ -1,5 +1,8 @@
 """Shared fixtures for the CBE criteria test modules."""
+from datetime import datetime, timezone
+
 import pytest
+from django.contrib.auth import get_user_model
 from organizations.api import ensure_organization
 from organizations.models import Organization
 
@@ -65,3 +68,15 @@ def _default_rule_profile() -> CompetencyRuleProfile:
         course__isnull=True,
         competency_taxonomy__isnull=True,
     )
+
+
+@pytest.fixture(name="user")
+def _user():
+    """Create a single learner for use in these tests."""
+    return get_user_model().objects.create(username="learner")
+
+
+@pytest.fixture(name="now")
+def _now() -> datetime:
+    """A single UTC timestamp shared by writes in a test."""
+    return datetime.now(timezone.utc)
