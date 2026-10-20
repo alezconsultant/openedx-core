@@ -19,11 +19,21 @@ from rest_framework.viewsets import GenericViewSet
 from openedx_tagging.models import Tag
 from openedx_tagging.rules import ObjectTagPermissionItem
 
-from ...api import associate_competency_criterion, get_competency_rule_profiles, resolve_competency_tag
+from ...api import (
+    associate_competency_criterion,
+    get_blocked_courses,
+    get_competency_rule_profiles,
+    resolve_competency_tag,
+)
 from ...models import CompetencyCriteriaGroup, CompetencyRuleProfile
-from ..paginators import CompetencyRuleProfilePagination
-from .permissions import CompetencyRuleProfilePermissions
-from .serializers import CompetencyCriterionSerializer, CompetencyRuleProfileSerializer
+from ..paginators import CompetencyBlockedCoursesPagination, CompetencyRuleProfilePagination
+from .permissions import CompetencyReadPermission, CompetencyRuleProfilePermissions
+from .serializers import (
+    BlockedCourseSerializer,
+    CompetencyBlockedCoursesQueryParamsSerializer,
+    CompetencyCriterionSerializer,
+    CompetencyRuleProfileSerializer,
+)
 
 
 class CompetencyRuleProfileView(mixins.ListModelMixin, GenericViewSet):
@@ -104,3 +114,35 @@ class CompetencyCriterionCreateView(generics.CreateAPIView):
         except DjangoValidationError as exc:
             raise DRFValidationError(exc.message_dict if hasattr(exc, "message_dict") else exc.messages) from exc
         return Response(self.get_serializer(criterion).data, status=status.HTTP_201_CREATED)
+
+
+class CompetencyBlockedCoursesView(generics.GenericAPIView):
+    """
+    GET-only. List the courses where a competency can't get a new criterion, paginated.
+
+    ``GET api/cbe/v1/competencies/<tag_id>/blocked-courses/`` returns every course where a
+    taxonomy ancestor or descendant of the competency already has a live criterion, sorted by
+    course key; ``course_keys`` (comma-separated) narrows it. The result is a hint for authoring:
+    the create-criterion endpoint still enforces the rule. 404 if ``tag_id`` isn't a competency
+    tag, 403 if the caller can't view its taxonomy, 400 for a malformed ``course_keys``.
+
+    UNSTABLE: the criteria-authoring family is incomplete, so this shape may change without a
+    deprecation cycle.
+    """
+
+    authentication_classes = (JwtAuthentication, SessionAuthenticationAllowInactiveUser)
+    permission_classes = [CompetencyReadPermission]
+    pagination_class = CompetencyBlockedCoursesPagination
+
+    def get(self, request, tag_id):
+        """Return one page of the competency's blocked courses."""
+        try:
+            tag = resolve_competency_tag(tag_id)
+        except Tag.DoesNotExist as exc:
+            raise NotFound(str(exc)) from exc
+        self.check_object_permissions(request, tag)
+        params = CompetencyBlockedCoursesQueryParamsSerializer(data=request.query_params.dict())
+        params.is_valid(raise_exception=True)
+        rows = get_blocked_courses(tag, course_keys=params.validated_data.get("course_keys"))
+        page = self.paginate_queryset(rows)
+        return self.get_paginated_response(BlockedCourseSerializer(page, many=True).data)
