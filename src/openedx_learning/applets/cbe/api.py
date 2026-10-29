@@ -191,9 +191,9 @@ def get_competency_criteria_tree(tag: Tag) -> CompetencyCriteriaTree:
         .order_by(F("parent_id").asc(nulls_first=True), "ordering", "id")
     )
 
-    # Walk down from the roots instead of relying on row order: ordering by parent_id does not
-    # guarantee a parent comes before its child once groups can be moved, since a parent may
-    # then have a larger id than its child.
+    # Walk down from the roots instead of relying on row order. A group's parent is fixed once
+    # saved, but a QuerySet.update() can still give a group a parent with a larger id, and
+    # ordering by parent_id would then visit that child before its parent.
     children_by_parent_id: dict[int | None, list[int]] = {}
     for group in groups:
         children_by_parent_id.setdefault(group.parent_id, []).append(group.id)
@@ -228,7 +228,9 @@ def _create_leaf_group(
     tag/course pair can hold more than one leaf, one per criterion. The root and course-level
     group names are truncated to fit the name column; they are never shown in the UI.
 
-    Must run inside a transaction holding the tag row lock.
+    The root and course-level lookups need no lock of their own: the unique constraints hold one
+    root per tag and one course-level group per tag and course, and ``get_or_create()`` recovers
+    from a concurrent insert. The caller's tag lock is for ``_reject_duplicate_criterion()``.
     """
     name_max_length = CompetencyCriteriaGroup._meta.get_field("name").max_length
     # Both get_or_create() lookups match archived rows deliberately, so an archived container is
@@ -505,7 +507,10 @@ def associate_competency_criterion(
 
     with transaction.atomic():
         # Lock order is always the tag, then the course run, so two creates can't deadlock.
-        # Serializes the duplicate check and root creation; MySQL has no partial unique index for one root per tag.
+        # The database enforces one root per tag; the tag lock only serializes _reject_duplicate_criterion(). That
+        # check is check-then-act on both paths: without group_id a request always creates a fresh leaf, and with
+        # group_id CompetencyCriterion has no unique constraint on (object_tag, group), so no index catches a
+        # concurrent copy.
         Tag.objects.select_for_update().get(pk=tag.pk)
         # Serializes the per-course dominance check on CBE's own row, not the catalog's CourseRun.
         # Created first, since a locking read of a row that doesn't exist yet locks nothing; get_or_create()
