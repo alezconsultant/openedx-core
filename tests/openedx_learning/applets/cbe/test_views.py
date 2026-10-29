@@ -1199,6 +1199,7 @@ def test_full_tree_combines_multiple_courses_in_one_unscoped_response(
 
 def test_tree_response_never_references_a_group_it_left_out(
     user_client: APIClient,
+    organization: Organization,
     tag: Tag,
     course_run: CourseRun,
     default_rule_profile: CompetencyRuleProfile,
@@ -1207,23 +1208,18 @@ def test_tree_response_never_references_a_group_it_left_out(
     leaf = _create_leaf_group(tag, course_run)
     object_tag = ObjectTag.objects.create(object_id=usage_key(course_run, "p1"), taxonomy=tag.taxonomy, tag=tag)
     CompetencyCriterion.objects.create(group=leaf, object_tag=object_tag, rule_profile=default_rule_profile)
-    sibling_leaf = _create_leaf_group(tag, course_run)
-    sibling_object_tag = ObjectTag.objects.create(
-        object_id=usage_key(course_run, "p2"), taxonomy=tag.taxonomy, tag=tag,
+    # The kept leaf lives under a second course's course-level group, so archiving the first
+    # course-level group leaves it attached to a returned parent.
+    other_course_run = make_course_run(organization, "Python200", "Fall2026")
+    kept_leaf = _create_leaf_group(tag, other_course_run)
+    kept_object_tag = ObjectTag.objects.create(
+        object_id=usage_key(other_course_run, "p1"), taxonomy=tag.taxonomy, tag=tag,
     )
     kept_criterion = CompetencyCriterion.objects.create(
-        group=sibling_leaf, object_tag=sibling_object_tag, rule_profile=default_rule_profile,
+        group=kept_leaf, object_tag=kept_object_tag, rule_profile=default_rule_profile,
     )
     course_level = leaf.parent
     assert course_level is not None
-    # Both leaves share one course-level group, so detach the sibling under a kept parent.
-    kept_course_level = sibling_leaf.parent
-    assert kept_course_level is not None
-    assert kept_course_level.id == course_level.id
-    root = course_level.parent
-    assert root is not None
-    sibling_leaf.parent = root
-    sibling_leaf.save()
     course_level.archived = True
     course_level.save()
 

@@ -1231,11 +1231,10 @@ def test_get_competency_criteria_tree_keeps_a_group_moved_under_a_later_created_
     group_b = CompetencyCriteriaGroup.objects.create(tag=tag, parent=root)
     group_c = CompetencyCriteriaGroup.objects.create(tag=tag, parent=root)
     # A sits under B and B under C, so ordering by parent_id puts A before B: a single pass in
-    # that order would judge A before its parent B was kept.
-    group_b.parent = group_c
-    group_b.save()
-    group_a.parent = group_b
-    group_a.save()
+    # that order would judge A before its parent B was kept. save() rejects a parent change, so
+    # build the shape the way only a bulk update can.
+    CompetencyCriteriaGroup.objects.filter(pk=group_b.pk).update(parent=group_c)
+    CompetencyCriteriaGroup.objects.filter(pk=group_a.pk).update(parent=group_b)
     object_tag = ObjectTag.objects.create(object_id=usage_key(course_run, "p1"), taxonomy=tag.taxonomy, tag=tag)
     criterion = CompetencyCriterion.objects.create(
         group=group_a, object_tag=object_tag, rule_profile=default_rule_profile,
