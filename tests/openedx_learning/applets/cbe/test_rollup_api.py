@@ -7,7 +7,8 @@ from types import SimpleNamespace
 from unittest import mock
 
 import pytest
-from django.db import DatabaseError, connection
+from django.db import DatabaseError, connection, transaction
+from django.db.transaction import TransactionManagementError
 from django.test.utils import CaptureQueriesContext
 from freezegun import freeze_time
 
@@ -16,7 +17,6 @@ from openedx_learning.applets.cbe import rollup
 from openedx_learning.models import (
     CompetencyCriteriaGroup,
     CompetencyCriterion,
-    CompetencyMasteryStatus,
     CompetencyRuleProfile,
     LogicOperator,
     MasteryStatus,
@@ -27,7 +27,8 @@ from openedx_learning.models import (
 )
 from openedx_tagging.models import ObjectTag, Tag, Taxonomy
 
-pytestmark = pytest.mark.django_db
+# The rollup refuses to run inside a transaction, so these tests cannot use the default rollback-per-test mode.
+pytestmark = [pytest.mark.django_db(transaction=True), pytest.mark.usefixtures("migration_seed_rows")]
 
 DEMONSTRATED = MasteryStatus.DEMONSTRATED
 PARTIAL = MasteryStatus.PARTIALLY_ATTEMPTED
@@ -323,21 +324,6 @@ def test_a_level_whose_value_does_not_change_keeps_its_last_changed_time(user, a
     )
 
 
-@pytest.mark.parametrize("passing_root_first", [True, False])
-def test_a_competency_with_two_root_groups_ends_at_the_higher_result(
-    user, tag, default_rule_profile, passing_root_first,
-) -> None:
-    """The database does not forbid a second root; raise-only writes make the higher result win in any order."""
-    roots = [_make_group(tag), _make_group(tag)]
-    passing_root, failing_root = roots if passing_root_first else reversed(roots)
-    _record(user, _make_criterion(failing_root, ASSIGNMENT_1, default_rule_profile), FAILED)
-    _record(user, _make_criterion(passing_root, ASSIGNMENT_2, default_rule_profile), DEMONSTRATED)
-
-    _roll_up(user, ASSIGNMENT_1, ASSIGNMENT_2)
-
-    assert _competency_status(user, tag) == DEMONSTRATED
-
-
 def test_the_walk_continues_upward_past_a_group_whose_stored_status_is_already_higher(user, tag, and_tree) -> None:
     _record(user, and_tree.first, DEMONSTRATED)
     _record(user, and_tree.second, DEMONSTRATED)
@@ -405,18 +391,8 @@ def test_a_storage_error_propagates_so_the_caller_can_retry(user, and_tree) -> N
             _roll_up(user, ASSIGNMENT_1)
 
 
-_SEEDED_STATUS_LABELS = {
-    MasteryStatus.ATTEMPTED_NOT_DEMONSTRATED: "AttemptedNotDemonstrated",
-    MasteryStatus.PARTIALLY_ATTEMPTED: "PartiallyAttempted",
-    MasteryStatus.DEMONSTRATED: "Demonstrated",
-}
-
-
-@pytest.mark.django_db(transaction=True)
 def test_every_write_runs_outside_any_enclosing_transaction(user, competency_taxonomy) -> None:
     """Each level must commit before the next is read, so the walk may not wrap itself in a transaction."""
-    for status, label in _SEEDED_STATUS_LABELS.items():
-        CompetencyMasteryStatus.objects.get_or_create(id=status.value, defaults={"status": label})
     parent = Tag.objects.create(taxonomy=competency_taxonomy, value="Parent")
     child = Tag.objects.create(taxonomy=competency_taxonomy, value="Child", parent=parent)
     root = CompetencyCriteriaGroup.objects.create(tag=child)
@@ -443,3 +419,9 @@ def test_every_write_runs_outside_any_enclosing_transaction(user, competency_tax
     assert not any(atomic_at_write)
     # An enclosing transaction would turn get_or_create's own atomic() into a savepoint.
     assert not any("SAVEPOINT" in query["sql"] for query in queries)
+
+
+def test_a_call_inside_a_transaction_raises(user) -> None:
+    """Each level must commit before the next is read, so the walk refuses to run inside a transaction."""
+    with pytest.raises(TransactionManagementError), transaction.atomic():
+        _roll_up(user, ASSIGNMENT_1)

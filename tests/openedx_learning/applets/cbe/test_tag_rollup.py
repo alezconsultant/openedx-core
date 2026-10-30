@@ -1,6 +1,7 @@
 """
 Tests for `roll_up_competency_statuses` above the competency level: a graded competency's parents.
 """
+import logging
 from datetime import datetime, timezone
 from types import SimpleNamespace
 from unittest import mock
@@ -20,8 +21,10 @@ from openedx_learning.models import (
     StudentCompetencyStatus,
 )
 from openedx_tagging.models import ObjectTag, Tag
+from openedx_tagging.models.base import TAXONOMY_MAX_DEPTH
 
-pytestmark = pytest.mark.django_db
+# The rollup refuses to run inside a transaction, so these tests cannot use the default rollback-per-test mode.
+pytestmark = [pytest.mark.django_db(transaction=True), pytest.mark.usefixtures("migration_seed_rows")]
 
 DEMONSTRATED = MasteryStatus.DEMONSTRATED
 PARTIAL = MasteryStatus.PARTIALLY_ATTEMPTED
@@ -67,11 +70,6 @@ def _competency_status(user, tag: Tag) -> int | None:
 
 def _roll_up(user, *object_ids: str) -> None:
     roll_up_competency_statuses(user_id=user.id, object_ids=list(object_ids))
-
-
-def _warned_about(warning: mock.MagicMock) -> set[tuple[int, int]]:
-    """Return the (competency id, sub-competency id) pairs a mocked ``log.warning`` was called with."""
-    return {(call.args[1], call.args[2]) for call in warning.call_args_list}
 
 
 @pytest.fixture(name="family")
@@ -148,7 +146,7 @@ def test_a_failed_own_root_group_shows_progress_on_the_parent(user, family, defa
     assert _competency_status(user, family.parent) == PARTIAL
 
 
-def test_an_unearnable_sub_competency_is_logged_and_does_not_block_a_parent_with_its_own_requirements(
+def test_sub_competencies_without_criteria_do_not_block_a_parent_with_its_own_requirements(
     user, family, default_rule_profile,
 ) -> None:
     earnable = _earnable(family.children[0], _object_id("c1"), default_rule_profile)
@@ -156,30 +154,23 @@ def test_an_unearnable_sub_competency_is_logged_and_does_not_block_a_parent_with
     own = _earnable(family.parent, _object_id("p"), default_rule_profile)
     _set_group_status(user, own.root, DEMONSTRATED)
 
-    with mock.patch.object(rollup.log, "warning") as warning:
-        _roll_up(user, earnable.object_id)
+    _roll_up(user, earnable.object_id)
 
     assert _competency_status(user, family.parent) == DEMONSTRATED
-    assert _warned_about(warning) == {
-        (family.parent.pk, family.children[1].pk),
-        (family.parent.pk, family.children[2].pk),
-    }
 
 
-def test_an_unearnable_sub_competency_caps_a_parent_that_has_no_requirements_of_its_own(
+def test_a_sub_competency_without_criteria_caps_a_parent_that_has_no_requirements_of_its_own(
     user, competency_taxonomy, default_rule_profile,
 ) -> None:
     parent = _make_tag(competency_taxonomy, "Parent")
     earnable_child = _make_tag(competency_taxonomy, "Earnable", parent)
-    unearnable_child = _make_tag(competency_taxonomy, "Unearnable", parent)
+    _make_tag(competency_taxonomy, "Unearnable", parent)
     earnable = _earnable(earnable_child, _object_id("c"), default_rule_profile)
     _record(user, earnable, DEMONSTRATED)
 
-    with mock.patch.object(rollup.log, "warning") as warning:
-        _roll_up(user, earnable.object_id)
+    _roll_up(user, earnable.object_id)
 
     assert _competency_status(user, parent) == PARTIAL
-    assert _warned_about(warning) == {(parent.pk, unearnable_child.pk)}
 
 
 def test_a_sub_competency_with_criteria_only_further_down_still_participates(
@@ -239,6 +230,32 @@ def test_the_deepest_allowed_taxonomy_is_walked_to_the_top(user, competency_taxo
     assert _competency_status(user, tags[5]) == DEMONSTRATED
 
 
+def test_a_taxonomy_deeper_than_the_cap_logs_the_parents_left_unrecomputed(
+    user, competency_taxonomy, default_rule_profile, caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A tree deeper than the cap is walked as far as the cap allows, and the parents left out are logged."""
+    tags = [_make_tag(competency_taxonomy, "Level 0")]
+    for depth in range(1, TAXONOMY_MAX_DEPTH + 2):
+        tags.append(_make_tag(competency_taxonomy, f"Level {depth}"))
+        # Tag.save() rejects a tag deeper than the cap, so attach each level with a raw UPDATE.
+        Tag.objects.filter(pk=tags[-1].pk).update(
+            parent=tags[-2], depth=depth, lineage=tags[-2].lineage + tags[-1].value + "\t",
+        )
+        tags[-1].refresh_from_db()
+    earnable = _earnable(tags[-1], _object_id("too-deep"), default_rule_profile)
+    _record(user, earnable, DEMONSTRATED)
+
+    with caplog.at_level(logging.ERROR, logger=rollup.__name__):
+        _roll_up(user, earnable.object_id)
+
+    assert _competency_status(user, tags[1]) == DEMONSTRATED
+    assert _competency_status(user, tags[0]) is None
+    assert [record.getMessage() for record in caplog.records] == [
+        f"Competency rollup for user {user.id} stopped at the taxonomy depth cap; "
+        f"parent tags {[tags[0].pk]} were not recomputed",
+    ]
+
+
 def test_two_graded_competencies_sharing_a_parent_recompute_that_parent_once(
     user, family, default_rule_profile,
 ) -> None:
@@ -277,28 +294,6 @@ def test_parents_at_the_same_level_are_rolled_up_independently(
 
     assert _competency_status(user, parent_one) == DEMONSTRATED
     assert _competency_status(user, parent_two) == PARTIAL
-
-
-def test_unearnable_detection_does_not_mix_taxonomies_that_share_tag_names(
-    user, competency_taxonomy, default_rule_profile,
-) -> None:
-    other_taxonomy = CompetencyTaxonomy.objects.create(name="Other", export_id="other-v1")
-    parent_a = _make_tag(competency_taxonomy, "Parent")
-    shared_a = _make_tag(competency_taxonomy, "Shared", parent_a)
-    orphan_a = _make_tag(competency_taxonomy, "Orphan", parent_a)
-    parent_b = _make_tag(other_taxonomy, "Parent")
-    orphan_b = _make_tag(other_taxonomy, "Orphan", parent_b)
-    graded = [
-        _earnable(shared_a, _object_id("shared"), default_rule_profile),
-        _earnable(orphan_b, _object_id("orphan-b"), default_rule_profile),
-    ]
-    for earnable in graded:
-        _record(user, earnable, DEMONSTRATED)
-
-    with mock.patch.object(rollup.log, "warning") as warning:
-        _roll_up(user, *(earnable.object_id for earnable in graded))
-
-    assert _warned_about(warning) == {(parent_a.pk, orphan_a.pk)}
 
 
 def test_competencies_graded_at_different_depths_converge_on_the_shared_ancestor(

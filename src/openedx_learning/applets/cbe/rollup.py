@@ -6,10 +6,10 @@ from __future__ import annotations
 import logging
 from collections.abc import Sequence
 from datetime import datetime, timezone
-from functools import reduce
-from operator import or_
 
-from django.db.models import Max, Q
+from django.db import connection
+from django.db.models import Max
+from django.db.transaction import TransactionManagementError
 
 from openedx_tagging.models import Tag
 from openedx_tagging.models.base import TAXONOMY_MAX_DEPTH
@@ -169,32 +169,9 @@ def _sub_competency_status(child_ids: list[int], competency_status: dict[int, in
     return MasteryStatus.PARTIALLY_ATTEMPTED
 
 
-def _log_unearnable_sub_competencies(parents: list[Tag], children_by_parent: dict[int, list[tuple[int, str]]]) -> None:
-    """Log each direct sub-competency with no root criteria group anywhere in its subtree."""
-    candidates = [
-        (parent, child_id, lineage)
-        for parent in parents
-        for child_id, lineage in children_by_parent.get(parent.pk, [])
-    ]
-    if not candidates:
-        return
-    root_lineages: dict[int | None, list[str]] = {}
-    rows = CompetencyCriteriaGroup.objects.filter(parent__isnull=True).filter(
-        reduce(or_, (
-            Q(tag__taxonomy_id=parent.taxonomy_id, tag__lineage__startswith=lineage)
-            for parent, _, lineage in candidates
-        )),
-    ).values_list("tag__taxonomy_id", "tag__lineage")
-    for taxonomy_id, lineage in rows:
-        root_lineages.setdefault(taxonomy_id, []).append(lineage.lower())
-    for parent, child_id, lineage in candidates:
-        prefix = lineage.lower()
-        if not any(root_lineage.startswith(prefix) for root_lineage in root_lineages.get(parent.taxonomy_id, [])):
-            log.warning(
-                "Competency %s: sub-competency %s has no criteria beneath it and can never be demonstrated",
-                parent.pk,
-                child_id,
-            )
+def _parent_ids(tag_ids: set[int]) -> set[int]:
+    """Return the ids of the parents of the tags in ``tag_ids``."""
+    return set(Tag.objects.filter(pk__in=tag_ids, parent_id__isnull=False).values_list("parent_id", flat=True))
 
 
 def _roll_up_parent_tags(user_id: int, tag_ids: set[int], now: datetime) -> None:
@@ -202,26 +179,21 @@ def _roll_up_parent_tags(user_id: int, tag_ids: set[int], now: datetime) -> None
     frontier = set(tag_ids)
     # The depth cap bounds the walk to a few iterations, and a tag's parents stay in its own taxonomy.
     for _ in range(TAXONOMY_MAX_DEPTH):
-        parent_ids = set(
-            Tag.objects.filter(pk__in=frontier, parent_id__isnull=False).values_list("parent_id", flat=True)
-        )
+        parent_ids = _parent_ids(frontier)
         if not parent_ids:
             return
         parents = list(Tag.objects.filter(pk__in=parent_ids))
-        children_by_parent: dict[int, list[tuple[int, str]]] = {}
-        for child_id, parent_id, lineage in Tag.objects.filter(parent_id__in=parent_ids).values_list(
-            "pk", "parent_id", "lineage",
-        ):
-            children_by_parent.setdefault(parent_id, []).append((child_id, lineage))
+        children_by_parent: dict[int, list[int]] = {}
+        for child_id, parent_id in Tag.objects.filter(parent_id__in=parent_ids).values_list("pk", "parent_id"):
+            children_by_parent.setdefault(parent_id, []).append(child_id)
         competency_status = dict(
             StudentCompetencyStatus.objects.filter(user_id=user_id, tag__parent_id__in=parent_ids).values_list(
                 "tag_id", "status_id",
             )
         )
         own = _own_criteria_statuses(user_id, parent_ids)
-        _log_unearnable_sub_competencies(parents, children_by_parent)
         for parent in parents:
-            child_ids = [child_id for child_id, _ in children_by_parent.get(parent.pk, [])]
+            child_ids = children_by_parent.get(parent.pk, [])
             status = combine_parent_competency_status(
                 own.get(parent.pk), _sub_competency_status(child_ids, competency_status),
             )
@@ -233,6 +205,14 @@ def _roll_up_parent_tags(user_id: int, tag_ids: set[int], now: datetime) -> None
                     now=now,
                 )
         frontier = parent_ids
+    # Tag.save() enforces the cap, so only a tree built around it can still have parents here.
+    pending = _parent_ids(frontier)
+    if pending:
+        log.error(
+            "Competency rollup for user %s stopped at the taxonomy depth cap; parent tags %s were not recomputed",
+            user_id,
+            sorted(pending),
+        )
 
 
 def roll_up_competency_statuses(*, user_id: int, object_ids: Sequence[str]) -> None:
@@ -241,7 +221,14 @@ def roll_up_competency_statuses(*, user_id: int, object_ids: Sequence[str]) -> N
 
     The caller must not be inside a transaction, because each level has to commit before the next is read.
     Repeated calls with the same arguments are safe, since every write only ever raises a stored status.
+
+    :raises TransactionManagementError: if called inside an atomic block.
     """
+    if connection.in_atomic_block:
+        raise TransactionManagementError(
+            "roll_up_competency_statuses() must run outside any transaction: "
+            "each level commits before the next is read."
+        )
     if not object_ids:
         return
     group_ids = set(

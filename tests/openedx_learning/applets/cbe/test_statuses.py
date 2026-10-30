@@ -1,10 +1,12 @@
 """
 Tests for `raise_status`, the monotone write shared by the learner status tables.
 """
+import logging
 from datetime import datetime, timezone
 
 import pytest
 
+from openedx_learning.applets.cbe import statuses
 from openedx_learning.applets.cbe.statuses import raise_status
 from openedx_learning.models import MasteryStatus, StudentCompetencyStatus
 
@@ -58,3 +60,36 @@ def test_equal_status_changes_nothing(user, tag) -> None:
     assert _write(user, tag, MasteryStatus.DEMONSTRATED, SECOND) == 0
 
     assert StudentCompetencyStatus.objects.get(user=user, tag=tag).modified == FIRST
+
+
+def test_creating_a_row_is_logged(user, tag, caplog: pytest.LogCaptureFixture) -> None:
+    """A created row is logged with its model, lookup, and new status."""
+    with caplog.at_level(logging.INFO, logger=statuses.__name__):
+        _write(user, tag, MasteryStatus.PARTIALLY_ATTEMPTED, FIRST)
+
+    assert [record.getMessage() for record in caplog.records] == [
+        f"Created StudentCompetencyStatus {{'user_id': {user.id}, 'tag_id': {tag.id}}}: status None -> 20",
+    ]
+
+
+def test_raising_a_status_is_logged(user, tag, caplog: pytest.LogCaptureFixture) -> None:
+    """A raised row is logged with the status it went from and to."""
+    _write(user, tag, MasteryStatus.PARTIALLY_ATTEMPTED, FIRST)
+
+    with caplog.at_level(logging.INFO, logger=statuses.__name__):
+        _write(user, tag, MasteryStatus.DEMONSTRATED, SECOND)
+
+    assert [record.getMessage() for record in caplog.records] == [
+        f"Raised StudentCompetencyStatus {{'user_id': {user.id}, 'tag_id': {tag.id}}}: status 20 -> 30",
+    ]
+
+
+def test_an_unchanged_status_is_not_logged(user, tag, caplog: pytest.LogCaptureFixture) -> None:
+    """A write that leaves the stored status as it was logs nothing."""
+    _write(user, tag, MasteryStatus.DEMONSTRATED, FIRST)
+
+    with caplog.at_level(logging.INFO, logger=statuses.__name__):
+        _write(user, tag, MasteryStatus.PARTIALLY_ATTEMPTED, SECOND)
+        _write(user, tag, MasteryStatus.DEMONSTRATED, SECOND)
+
+    assert not caplog.records

@@ -1,18 +1,28 @@
 """
-The monotone write the rollup uses for the group and competency status tables.
+The monotone write shared by the learner status tables: leaf, group, and competency.
 """
 from __future__ import annotations
 
+import logging
 from datetime import datetime
 from typing import TypeVar
 
 from django.db import models
 
-from .models import MasteryStatus
+from .models import (
+    MasteryStatus,
+    StudentCompetencyCriteriaGroupStatus,
+    StudentCompetencyCriterionStatus,
+    StudentCompetencyStatus,
+)
+
+log = logging.getLogger(__name__)
 
 __all__ = ["raise_status"]
 
-_ModelT = TypeVar("_ModelT", bound=models.Model)
+_ModelT = TypeVar(
+    "_ModelT", StudentCompetencyCriterionStatus, StudentCompetencyCriteriaGroupStatus, StudentCompetencyStatus,
+)
 
 
 def raise_status(
@@ -25,6 +35,10 @@ def raise_status(
     """
     row, created = manager.get_or_create(**lookup, defaults={"status_id": status, "created": now, "modified": now})
     if created:
+        log.info("Created %s %s: status %s -> %s", manager.model.__name__, lookup, None, status)
         return 1
     # A single conditional UPDATE, never read-then-write: a stale read can only compute a value that is too low.
-    return manager.filter(pk=row.pk, status_id__lt=status).update(status_id=status, modified=now)
+    changed = manager.filter(pk=row.pk, status_id__lt=status).update(status_id=status, modified=now)
+    if changed:
+        log.info("Raised %s %s: status %s -> %s", manager.model.__name__, lookup, row.status_id, status)
+    return changed
